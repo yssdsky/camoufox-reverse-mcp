@@ -3,6 +3,11 @@ instrumentation.py - Source-level JSVMP instrumentation (v1.0.0 unified).
 
 v1.0.1 bugfix: route uses context.route() instead of page.route(),
 selective instrumentation for large files, timing diagnostics.
+v1.0.2 bugfix: strip Content-Encoding / Transfer-Encoding from fulfill()
+headers; Playwright already decoded the body, so passing back the original
+encoding header makes Firefox decode plaintext again and silently drops the
+response (no responseReceived / loadingFinished event, size 0).
+See https://github.com/WhiteNightShadow/camoufox-reverse-mcp/issues/3
 """
 from __future__ import annotations
 import time
@@ -17,6 +22,24 @@ from ..utils.ast_rewriter import ast_rewrite as _ast_rewrite_py
 
 # Module-level state for active instrumentation routes
 _active_routes: dict[str, dict] = {}
+
+
+# Headers that must be stripped before route.fulfill() — Playwright's
+# route.fetch() auto-decodes the body; reusing the original encoding/length
+# headers would corrupt the response and Firefox would drop it silently.
+_FULFILL_STRIP_HEADERS = (
+    "content-length", "Content-Length",
+    "content-encoding", "Content-Encoding",
+    "transfer-encoding", "Transfer-Encoding",
+)
+
+
+def _clean_response_headers(headers) -> dict:
+    """Return a copy of upstream response headers safe for route.fulfill()."""
+    cleaned = dict(headers)
+    for key in _FULFILL_STRIP_HEADERS:
+        cleaned.pop(key, None)
+    return cleaned
 
 
 @mcp.tool()
@@ -199,7 +222,7 @@ async def _install(url_pattern, mode, tag, rewrite_member_access,
                     if on_oversized == "skip":
                         await route.fulfill(
                             status=resp.status,
-                            headers=dict(resp.headers),
+                            headers=_clean_response_headers(resp.headers),
                             body=src,
                         )
                         stats["last_url"] = req_url
@@ -210,7 +233,7 @@ async def _install(url_pattern, mode, tag, rewrite_member_access,
                             # Can't do selective without filters, pass through
                             await route.fulfill(
                                 status=resp.status,
-                                headers=dict(resp.headers),
+                                headers=_clean_response_headers(resp.headers),
                                 body=src,
                             )
                             stats["last_url"] = req_url
@@ -278,9 +301,7 @@ async def _install(url_pattern, mode, tag, rewrite_member_access,
                 stats["last_url"] = req_url
                 stats["last_mode_used"] = mode_used
 
-                headers = dict(resp.headers)
-                headers.pop("content-length", None)
-                headers.pop("Content-Length", None)
+                headers = _clean_response_headers(resp.headers)
                 headers["content-type"] = "application/javascript; charset=utf-8"
                 await route.fulfill(status=resp.status, headers=headers, body=rewritten)
             except Exception as e:
