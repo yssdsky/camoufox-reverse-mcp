@@ -10,9 +10,14 @@ import argparse
 import camoufox  # noqa: F401
 
 from .server import mcp
+from ._playwright_patch import patch_playwright_pageerror
 
 
 def main():
+    # Fix the Playwright Firefox-driver pageError crash (issue #5) before the
+    # browser is ever launched. No-op on Playwright versions without the bug.
+    patch_playwright_pageerror()
+
     parser = argparse.ArgumentParser(description="Camoufox Reverse Engineering MCP Server")
     parser.add_argument("--proxy", type=str, help="Proxy server URL (e.g. http://127.0.0.1:7890)")
     parser.add_argument("--headless", action="store_true", help="Run in headless mode")
